@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Music</title>
+<style>
+  :root { --bg:#fff; --fg:#222; --mute:#666; --line:#ddd; --bar:#1b1b1b; --barfg:#f2f2f2; --link:#2a6ebb; --hi:#e8f1fb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161616; --fg:#e6e6e6; --mute:#999; --line:#2c2c2c; --bar:#000; --barfg:#f2f2f2; --link:#6fa8e8; --hi:#1d2a3a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.4 Helvetica, Arial, sans-serif; background:var(--bg); color:var(--fg); padding-bottom:2rem; }
+  button { font:inherit; cursor:pointer; border:0; background:none; color:inherit; padding:.4rem .6rem; border-radius:3px; }
+  button:focus-visible, input:focus-visible, summary:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
+
+  /* Player: sticky bar, like Internet Archive's */
+  #player { position:sticky; top:0; z-index:5; background:var(--bar); color:var(--barfg); padding:.6rem .8rem .5rem; }
+  #now { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:1.4em; }
+  #now small { color:#aaa; margin-left:.4rem; }
+  #seekrow { display:flex; align-items:center; gap:.5rem; margin:.3rem 0; font-size:12px; color:#bbb; }
+  #seek { flex:1; min-width:0; accent-color:#fff; }
+  #ctl { display:flex; align-items:center; justify-content:center; gap:.3rem; }
+  #ctl button { font-size:20px; min-width:2.6rem; color:var(--barfg); }
+  #ctl button.on { background:#fff; color:#000; }
+  #play { font-size:24px; }
+
+  main { max-width:760px; margin:0 auto; padding:0 .8rem; }
+  #tools { display:flex; gap:.5rem; padding:.8rem 0; flex-wrap:wrap; }
+  #tools input { flex:1; min-width:10rem; padding:.45rem .6rem; font:inherit; border:1px solid var(--line); border-radius:3px; background:var(--bg); color:var(--fg); }
+  .big { background:var(--link); color:#fff; font-weight:bold; }
+  h2 { font-size:15px; margin:1.2rem 0 .3rem; color:var(--mute); font-weight:normal; border-bottom:1px solid var(--line); padding-bottom:.2rem; }
+  details { border-bottom:1px solid var(--line); }
+  summary { display:flex; align-items:center; gap:.5rem; padding:.55rem 0; cursor:pointer; list-style:none; }
+  summary::-webkit-details-marker { display:none; }
+  summary .name { flex:1; min-width:0; }
+  summary .name span { display:block; color:var(--mute); font-size:13px; }
+  summary button { color:var(--link); font-size:13px; }
+  ol { list-style:none; margin:0 0 .6rem; padding:0; }
+  li { display:flex; gap:.5rem; padding:.4rem .4rem; cursor:pointer; border-radius:3px; }
+  li:hover { background:var(--hi); }
+  li.cur { background:var(--hi); font-weight:bold; }
+  li .n { width:1.8rem; text-align:right; color:var(--mute); flex:none; }
+  li .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  #msg { color:var(--mute); padding:1rem 0; }
+</style>
+</head>
+<body>
+
+<div id="player">
+  <div id="now">Nothing playing</div>
+  <div id="seekrow"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek"><span id="dur">0:00</span></div>
+  <div id="ctl">
+    <button id="shuf" title="Shuffle" aria-pressed="false">⇄</button>
+    <button id="prev" title="Previous">⏮</button>
+    <button id="play" title="Play / pause">▶</button>
+    <button id="next" title="Next">⏭</button>
+    <button id="rep" title="Repeat: off" aria-pressed="false">↻</button>
+  </div>
+</div>
+
+<main>
+  <div id="tools">
+    <button class="big" id="shuffleAll">Shuffle all tracks</button>
+    <input id="q" type="search" placeholder="Search tracks, albums, artists" aria-label="Search">
+  </div>
+  <div id="msg">Loading library…</div>
+  <div id="lists"></div>
+</main>
+
+<audio id="a" preload="auto"></audio>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const A = $('a'), fmt = s => isFinite(s) ? Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0') : '0:00';
+  let lib, tracks = [], base = '', queue = [], order = [], pos = -1;
+  let shuffle = false, repeat = 0; // repeat: 0 off, 1 all, 2 one
+  try { shuffle = localStorage.shuf === '1'; repeat = +localStorage.rep || 0; } catch (e) {}
+
+  const url = t => base + t.f.split('/').map(encodeURIComponent).join('/');
+
+  /* ---------- queue ---------- */
+  function shuffled(arr, first) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [a[i], a[j]] = [a[j], a[i]]; }
+    if (first != null) { const k = a.indexOf(first); if (k > 0) [a[0], a[k]] = [a[k], a[0]]; }
+    return a;
+  }
+  function start(ids, startId, forceShuffle) {
+    queue = ids.slice();
+    if (forceShuffle) shuffle = true;
+    order = shuffle ? shuffled(queue, startId) : queue.slice();
+    pos = startId != null ? order.indexOf(startId) : 0;
+    ui(); load(true);
+  }
+  function load(play) {
+    const id = order[pos]; if (id == null) return;
+    const t = tracks[id];
+    A.src = url(t);
+    if (play) A.play().catch(() => {});
+    $('now').innerHTML = '';
+    $('now').append(t.t, Object.assign(document.createElement('small'), { textContent: [t.a, t.al].filter(Boolean).join(' – ') }));
+    document.title = t.t + ' – My Music';
+    document.querySelectorAll('li.cur').forEach(e => e.classList.remove('cur'));
+    document.querySelectorAll('li[data-id="' + id + '"]').forEach(e => e.classList.add('cur'));
+    media(t);
+    // Warm the cache for the next track
+    const nx = order[(pos + 1) % order.length];
+    if (nx != null && order.length > 1) fetch(url(tracks[nx]), { headers: { Range: 'bytes=0-262143' } }).catch(() => {});
+  }
+  function step(d) {
+    if (!order.length) return;
+    let p = pos + d;
+    if (p >= order.length) { if (repeat === 1 || d > 0 && A.ended === false) p = 0; else { A.pause(); return; } }
+    if (p < 0) p = order.length - 1;
+    pos = p; load(true);
+  }
+
+  /* ---------- controls ---------- */
+  function ui() {
+    $('shuf').classList.toggle('on', shuffle); $('shuf').setAttribute('aria-pressed', shuffle);
+    $('rep').classList.toggle('on', repeat > 0); $('rep').textContent = repeat === 2 ? '↻1' : '↻';
+    $('rep').title = 'Repeat: ' + ['off', 'all', 'one'][repeat];
+    try { localStorage.shuf = shuffle ? 1 : 0; localStorage.rep = repeat; } catch (e) {}
+  }
+  $('play').onclick = () => { if (!A.src) return; A.paused ? A.play() : A.pause(); };
+  $('next').onclick = () => step(1);
+  $('prev').onclick = () => { A.currentTime > 3 ? A.currentTime = 0 : step(-1); };
+  $('shuf').onclick = () => {
+    shuffle = !shuffle;
+    if (order.length) { const cur = order[pos]; order = shuffle ? shuffled(queue, cur) : queue.slice(); pos = order.indexOf(cur); }
+    ui();
+  };
+  $('rep').onclick = () => { repeat = (repeat + 1) % 3; ui(); };
+  $('shuffleAll').onclick = () => start(tracks.map((_, i) => i), null, true);
+
+  A.onplay = () => { $('play').textContent = '❚❚'; if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; };
+  A.onpause = () => { $('play').textContent = '▶'; if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; };
+  A.onended = () => { if (repeat === 2) { A.currentTime = 0; A.play(); } else step(1); };
+  A.onerror = () => { if (A.src) setTimeout(() => step(1), 800); }; // skip unplayable files
+  let seeking = false;
+  A.ontimeupdate = () => {
+    $('cur').textContent = fmt(A.currentTime); $('dur').textContent = fmt(A.duration);
+    if (!seeking && A.duration) $('seek').value = A.currentTime / A.duration * 1000;
+    if ('mediaSession' in navigator && A.duration && navigator.mediaSession.setPositionState && !(A.currentTime % 5 > 0.5))
+      try { navigator.mediaSession.setPositionState({ duration: A.duration, position: A.currentTime, playbackRate: 1 }); } catch (e) {}
+  };
+  $('seek').oninput = () => { seeking = true; };
+  $('seek').onchange = () => { if (A.duration) A.currentTime = $('seek').value / 1000 * A.duration; seeking = false; };
+
+  // Lock screen / notification controls (also keeps audio alive with screen off)
+  function media(t) {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.metadata = new MediaMetadata({ title: t.t, artist: t.a || '', album: t.al || '' });
+    const h = (n, f) => { try { navigator.mediaSession.setActionHandler(n, f); } catch (e) {} };
+    h('play', () => A.play()); h('pause', () => A.pause());
+    h('nexttrack', () => step(1)); h('previoustrack', () => step(-1));
+    h('seekto', e => { A.currentTime = e.seekTime; });
+  }
+
+  /* ---------- library UI ---------- */
+  function trackList(ids, withNum) {
+    const ol = document.createElement('ol');
+    ids.forEach((id, i) => {
+      const t = tracks[id], li = document.createElement('li');
+      li.dataset.id = id; if (order[pos] === id) li.className = 'cur';
+      li.innerHTML = '<span class="n"></span><span class="t"></span>';
+      li.children[0].textContent = withNum ? i + 1 : '';
+      li.children[1].textContent = t.t + (withNum ? '' : ' — ' + [t.a, t.al].filter(Boolean).join(' – '));
+      li.onclick = () => start(ids, id);
+      ol.append(li);
+    });
+    return ol;
+  }
+  function group(title, sub, ids, withNum) {
+    const d = document.createElement('details'), s = document.createElement('summary');
+    s.innerHTML = '<span class="name"></span><button>Play</button><button>Shuffle</button>';
+    s.firstChild.textContent = title;
+    if (sub) s.firstChild.append(Object.assign(document.createElement('span'), { textContent: sub }));
+    s.children[1].onclick = e => { e.preventDefault(); e.stopPropagation(); start(ids, null, false); };
+    s.children[2].onclick = e => { e.preventDefault(); e.stopPropagation(); start(ids, null, true); };
+    d.append(s);
+    d.addEventListener('toggle', () => { if (d.open && d.children.length < 2) d.append(trackList(ids, withNum)); }); // render lazily
+    return d;
+  }
+  function render(filter) {
+    const L = $('lists'); L.innerHTML = '';
+    const f = (filter || '').toLowerCase().trim();
+    const match = i => !f || (tracks[i].t + ' ' + tracks[i].a + ' ' + tracks[i].al).toLowerCase().includes(f);
+    if (f) {
+      const ids = tracks.map((_, i) => i).filter(match).slice(0, 300);
+      L.append(Object.assign(document.createElement('h2'), { textContent: ids.length + ' matching tracks' }), trackList(ids, false));
+      return;
+    }
+    if (lib.playlists && lib.playlists.length) {
+      L.append(Object.assign(document.createElement('h2'), { textContent: 'Playlists' }));
+      lib.playlists.forEach(p => L.append(group(p.name, p.tracks.length + ' tracks', p.tracks, true)));
+    }
+    L.append(Object.assign(document.createElement('h2'), { textContent: 'Albums' }));
+    const byAlbum = new Map();
+    tracks.forEach((t, i) => { const k = t.al + '\u0000' + t.a; if (!byAlbum.has(k)) byAlbum.set(k, []); byAlbum.get(k).push(i); });
+    [...byAlbum.entries()].sort((x, y) => x[0].localeCompare(y[0])).forEach(([k, ids]) => {
+      const [al, ar] = k.split('\u0000');
+      L.append(group(al || 'Unknown album', ar + (ar ? ' · ' : '') + ids.length + ' tracks', ids, true));
+    });
+  }
+  let timer; $('q').oninput = e => { clearTimeout(timer); timer = setTimeout(() => render(e.target.value), 150); };
+
+  fetch('library.json').then(r => r.json()).then(j => {
+    lib = j; tracks = j.tracks; base = j.base || '';
+    if (base && !base.endsWith('/')) base += '/';
+    $('msg').remove(); render(); ui();
+  }).catch(() => { $('msg').textContent = 'Could not load library.json. Run build_library.py first (see README).'; });
+})();
+</script>
+</body>
+</html>
